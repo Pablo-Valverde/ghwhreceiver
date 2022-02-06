@@ -1,12 +1,12 @@
 #!/usr/bin/python3
 # -*- coding: utf-8 -*-
 
+from werkzeug.exceptions import MethodNotAllowed
 from flask import Flask, Response, request
 from requests import get
 from pathlib import Path
-from os import mkdir, path
 from ipaddress import ip_address
-import datetime
+import traceback
 import logging
 import sys
 import argparse
@@ -71,14 +71,6 @@ def parse():
 
 args = parse()
 
-logs_file = "logs/"
-
-if not path.isdir("logs"):
-    if not path.exists("logs"):
-        mkdir("logs")
-    else:
-        logs_file = ""
-
 app_logging = logging.getLogger("")
 app_logging.setLevel(logging.DEBUG)
 
@@ -87,18 +79,10 @@ stdout_handler.setLevel(logging.DEBUG)
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 stdout_handler.setFormatter(formatter)
 
-now = datetime.datetime.now()
-now = now.strftime("%d.%m.%Y-%H.%M.%S")
-file_handler = logging.FileHandler("%s%sGHW.log" % (logs_file,now), "w", encoding="UTF-8")
-file_handler.setLevel(logging.DEBUG)
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-file_handler.setFormatter(formatter)
-
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 
 app_logging.addHandler(stdout_handler)
-app_logging.addHandler(file_handler)
 
 SERVER_IP = args.ip
 SERVER_PORT = args.port
@@ -116,16 +100,27 @@ AVAILABLE_METHOD = "push"
 app = Flask(__name__)
 
 @app.after_request
-def request_in(response) -> str:
+def request_out(response) -> str:
     status = response.status_code
+    method = request.method
+    path = request.path
+    app_logging.info("%d - %s - %s %s" % (status, request.remote_addr, method, path))
+    return response
+
+@app.before_request
+def request_in():
     try:
         sender_ip = request.headers["X-Forwarded-For"]
     except KeyError:
         sender_ip = request.remote_addr
-    method = request.method
-    path = request.path
-    app_logging.info("%d - %s - %s %s" % (status, sender_ip, method, path))
-    return response
+    request.remote_addr = sender_ip
+
+@app.errorhandler(Exception)
+def on_error(error):
+    excp = traceback.format_exc()
+    if not type(error) == MethodNotAllowed:
+        log.error(excp)
+    return "", 403
 
 @app.post("/")
 def hook():
@@ -136,15 +131,15 @@ def hook():
     except KeyError:
         return Response(status=400)
 
-    try:
-        sender_ip = request.headers["X-Forwarded-For"]
-    except KeyError:
-        sender_ip = request.remote_addr
+    #try:
+    #    sender_ip = request.headers["X-Forwarded-For"]
+    #except KeyError:
+    #    sender_ip = request.remote_addr
 
     for ip in ips:
         range = iptools.IpRangeList(ip)
 
-        if not sender_ip in range:
+        if not request.remote_addr in range:
             continue
 
         if not REMOTE_URL.find(from_repo) == -1:
@@ -172,7 +167,7 @@ if __name__ == "__main__":
 
     ips = meta["hooks"]
 
-    refresh(pull, WAIT_FOR_EVENTS, DIR_NAME, REMOTE_URL)
+    #refresh(pull, WAIT_FOR_EVENTS, DIR_NAME, REMOTE_URL)
 
     app_logging.info("Server running on address https://%s:%d/" % (SERVER_IP, SERVER_PORT))
 
